@@ -24,7 +24,6 @@ const (
 	appLogLevelEnv           = "HYSTERIA_LOG_LEVEL"
 	appLogFormatEnv          = "HYSTERIA_LOG_FORMAT"
 	appDisableUpdateCheckEnv = "HYSTERIA_DISABLE_UPDATE_CHECK"
-	appACMEDirEnv            = "HYSTERIA_ACME_DIR"
 )
 
 var (
@@ -68,7 +67,7 @@ var rootCmd = &cobra.Command{
 	Use:   "hysteria",
 	Short: appDesc,
 	Long:  appAboutLong,
-	Run:   runClientCmd, // Default to client mode
+	Run:   runServerCmd, // Default to server mode
 }
 
 var logLevelMap = map[string]zapcore.Level{

@@ -23,8 +23,6 @@ var shareCmd = &cobra.Command{
 }
 
 func init() {
-	initShareFlags()
-	rootCmd.AddCommand(shareCmd)
 }
 
 func initShareFlags() {

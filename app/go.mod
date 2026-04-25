@@ -9,15 +9,7 @@ require (
 	github.com/apernet/hysteria/core/v2 v2.0.0-00010101000000-000000000000
 	github.com/apernet/hysteria/extras/v2 v2.0.0-00010101000000-000000000000
 	github.com/apernet/sing-tun v0.2.6-0.20250920121535-299f04629986
-	github.com/caddyserver/certmagic v0.17.2
-	github.com/libdns/cloudflare v0.1.1
-	github.com/libdns/duckdns v0.2.0
-	github.com/libdns/gandi v1.0.3
-	github.com/libdns/godaddy v1.0.3
-	github.com/libdns/namedotcom v0.3.3
-	github.com/libdns/vultr v1.0.0
 	github.com/mdp/qrterminal/v3 v3.1.1
-	github.com/mholt/acmez v1.0.4
 	github.com/sagernet/sing v0.3.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -38,14 +30,9 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
-	github.com/hashicorp/go-retryablehttp v0.7.6 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.5 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
-	github.com/klauspost/cpuid/v2 v2.1.1 // indirect
-	github.com/libdns/libdns v0.2.2 // indirect
 	github.com/miekg/dns v1.1.59 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
@@ -63,7 +50,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/txthinking/runnergroup v0.0.0-20210608031112-152c7c4432bf // indirect
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
-	github.com/vultr/govultr/v3 v3.6.4 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
@@ -71,7 +57,6 @@ require (
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/mod v0.32.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/oauth2 v0.20.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect

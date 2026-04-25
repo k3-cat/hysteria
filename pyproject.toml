@@ -1,0 +1,13 @@
+[project]
+name = "hysteria-build"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "urllib3~=2.6.3",
+]
+
+[dependency-groups]
+test = [
+    "cryptography~=47.0.0",
+    "flask~=3.1.3",
+]
