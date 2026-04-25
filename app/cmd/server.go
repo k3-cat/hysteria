@@ -229,18 +229,31 @@ func (c *serverConfig) fillConn(hyConfig *server.Config) error {
 	}
 
 	var packetConn net.PacketConn
-	uAddr, portUnion, err := resolveServerListenAddr(listenAddr)
-	if err != nil {
-		return configError{Field: "listen", Err: err}
+	if strings.HasPrefix(listenAddr, "fd:") {
+		fd, err := strconv.Atoi(listenAddr[3:])
+		if err != nil {
+			return configError{Field: "listen", Err: err}
+		}
+		file := os.NewFile(uintptr(fd), "listener")
+		conn, err := net.FilePacketConn(file)
+		if err != nil {
+			return configError{Field: "listen", Err: err}
+		}
+		packetConn = conn
+	} else {
+		uAddr, portUnion, err := resolveServerListenAddr(listenAddr)
+		if err != nil {
+			return configError{Field: "listen", Err: err}
+		}
+		if len(portUnion) > 0 {
+			return configError{Field: "listen", Err: errors.New("pls manually configure port forwarding for multiple ports")}
+		}
+		conn, err := correctnet.ListenUDP("udp", uAddr)
+		if err != nil {
+			return configError{Field: "listen", Err: err}
+		}
+		packetConn = conn
 	}
-	if len(portUnion) > 0 {
-		return configError{Field: "listen", Err: errors.New("pls manually configure port forwarding for multiple ports")}
-	}
-	conn, err := correctnet.ListenUDP("udp", uAddr)
-	if err != nil {
-		return configError{Field: "listen", Err: err}
-	}
-	packetConn = conn
 
 	switch strings.ToLower(c.Obfs.Type) {
 	case "", "plain":
