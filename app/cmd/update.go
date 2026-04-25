@@ -24,7 +24,6 @@ var checkUpdateCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(checkUpdateCmd)
 }
 
 func runCheckUpdateCmd(cmd *cobra.Command, args []string) {

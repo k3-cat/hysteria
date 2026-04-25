@@ -1,0 +1,44 @@
+# $schema: https://json.schemastore.org/github-workflow.json
+
+name: "Check"
+
+
+on:
+  push:
+
+  pull_request:
+
+
+concurrency:
+  group: check-build-${{ github.ref }}
+  cancel-in-progress: true
+
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: go.work.sum
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
+      - name: Check format
+        run: uv run hyperbole.py format-check

@@ -37,8 +37,6 @@ var speedtestCmd = &cobra.Command{
 }
 
 func init() {
-	initSpeedtestFlags()
-	rootCmd.AddCommand(speedtestCmd)
 }
 
 func initSpeedtestFlags() {

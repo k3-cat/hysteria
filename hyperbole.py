@@ -4,10 +4,11 @@
 import argparse
 import os
 import re
-import sys
-import subprocess
-import datetime
 import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 # Hyperbole is the official build script for Hysteria.
 # Available environment variables for controlling the build:
@@ -34,57 +35,20 @@ APP_SRC_CMD_PKG = "github.com/apernet/hysteria/app/v2/cmd"
 MODULE_SRC_DIRS = [CORE_SRC_DIR, EXTRAS_SRC_DIR, APP_SRC_DIR]
 
 ARCH_ALIASES = {
-    "arm": {
-        "GOARCH": "arm",
-        "GOARM": "7",
-    },
-    "armv5": {
-        "GOARCH": "arm",
-        "GOARM": "5",
-    },
-    "armv6": {
-        "GOARCH": "arm",
-        "GOARM": "6",
-    },
-    "armv7": {
-        "GOARCH": "arm",
-        "GOARM": "7",
-    },
-    "mips": {
-        "GOARCH": "mips",
-        "GOMIPS": "",
-    },
-    "mipsle": {
-        "GOARCH": "mipsle",
-        "GOMIPS": "",
-    },
-    "mips-sf": {
-        "GOARCH": "mips",
-        "GOMIPS": "softfloat",
-    },
-    "mipsle-sf": {
-        "GOARCH": "mipsle",
-        "GOMIPS": "softfloat",
-    },
-    "amd64": {
-        "GOARCH": "amd64",
-        "GOAMD64": "",
-    },
-    "amd64-avx": {
-        "GOARCH": "amd64",
-        "GOAMD64": "v3",
-    },
-    "loong64": {
-        "GOARCH": "loong64",
-    },
+    "arm": {"GOARCH": "arm", "GOARM": "7"},
+    "armv7": {"GOARCH": "arm", "GOARM": "7"},
+    "mips": {"GOARCH": "mips", "GOMIPS": ""},
+    "mips-sf": {"GOARCH": "mips", "GOMIPS": "softfloat"},
+    "mips64le": {"GOARCH": "mips64le", "GOMIPS": ""},
+    "mips64le-sf": {"GOARCH": "mips64le", "GOMIPS": "softfloat"},
+    "amd64": {"GOARCH": "amd64", "GOAMD64": "v3"},
+    "amd64-noAVX2": {"GOARCH": "amd64", "GOAMD64": ""},
 }
 
 
 def check_command(args):
     try:
-        subprocess.check_call(
-            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        subprocess.check_call(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception:
         return False
@@ -140,9 +104,7 @@ def get_app_commit():
     app_commit = os.environ.get("HY_APP_COMMIT")
     if not app_commit:
         try:
-            app_commit = (
-                subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-            )
+            app_commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
         except Exception:
             app_commit = "Unknown"
     return app_commit
@@ -171,6 +133,10 @@ def get_lib_version():
                 line = line.strip()
                 if line.startswith("github.com/apernet/quic-go"):
                     return line.split(" ")[1].strip()
+
+            else:
+                raise ValueError
+
     except Exception:
         return "Unknown"
 
@@ -193,37 +159,50 @@ def get_app_platforms():
     return result
 
 
-def cmd_build(pprof=False, release=False, race=False):
-    if not check_build_env():
-        return
-
-    os.makedirs(BUILD_DIR, exist_ok=True)
-
+def get_ldflags():
     app_version = get_app_version()
-    app_date = datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    app_date = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     app_toolchain = get_toolchain()
     app_commit = get_app_commit()
     lib_version = get_lib_version()
 
-    ldflags = [
+    return [
         "-X",
-        APP_SRC_CMD_PKG + ".appVersion=" + app_version,
+        f"{APP_SRC_CMD_PKG}.appVersion={app_version}",
         "-X",
-        APP_SRC_CMD_PKG + ".appDate=" + app_date,
+        f"{APP_SRC_CMD_PKG}.appDate={app_date}",
         "-X",
-        APP_SRC_CMD_PKG
-        + ".appType="
-        + ("release" if release else "dev")
-        + ("-pprof" if pprof else ""),
+        f"{APP_SRC_CMD_PKG}.appType=dev-run",
         "-X",
-        '"' + APP_SRC_CMD_PKG + ".appToolchain=" + app_toolchain + '"',
+        f'"{APP_SRC_CMD_PKG}.appToolchain={app_toolchain}"',
         "-X",
-        APP_SRC_CMD_PKG + ".appCommit=" + app_commit,
+        f"{APP_SRC_CMD_PKG}.appCommit={app_commit}",
         "-X",
-        APP_SRC_CMD_PKG + ".libVersion=" + lib_version,
+        f"{APP_SRC_CMD_PKG}.libVersion={lib_version}",
     ]
+
+
+def cmd_build(pprof=False, release=False, race=False):
+    if not check_build_env():
+        return
+
+    ANDROID_NDK_HOME = (
+        Path(os.environ["ANDROID_NDK_HOME"]) / "toolchains/llvm/prebuilt/linux-x86_64/bin"
+    )
+    ANDROID_NDK_MAP = {
+        "arm64": ANDROID_NDK_HOME / "aarch64-linux-android29-clang",
+        "armv7": ANDROID_NDK_HOME / "armv7a-linux-androideabi29-clang",
+    }
+
+    os.makedirs(BUILD_DIR, exist_ok=True)
+
+    ldflags = get_ldflags()
+    ldflags.extend((
+        "-X",
+        f"{APP_SRC_CMD_PKG}.appType={'release' if release else 'dev'}"
+        + ("-pprof" if pprof else ""),
+    ))  # fmt: skip
+
     if release:
         ldflags.append("-s")
         ldflags.append("-w")
@@ -242,31 +221,24 @@ def cmd_build(pprof=False, release=False, race=False):
                 env[k] = v
         else:
             env["GOARCH"] = arch
+
         if os_name == "android":
             env["CGO_ENABLED"] = "1"
-            ANDROID_NDK_HOME = (
-                os.environ.get("ANDROID_NDK_HOME")
-                + "/toolchains/llvm/prebuilt/linux-x86_64/bin"
-            )
-            if arch == "arm64":
-                env["CC"] = ANDROID_NDK_HOME + "/aarch64-linux-android29-clang"
-            elif arch == "armv7":
-                env["CC"] = ANDROID_NDK_HOME + "/armv7a-linux-androideabi29-clang"
-            elif arch == "386":
-                env["CC"] = ANDROID_NDK_HOME + "/i686-linux-android29-clang"
-            elif arch == "amd64":
-                env["CC"] = ANDROID_NDK_HOME + "/x86_64-linux-android29-clang"
-            else:
+            try:
+                env["CC"] = str(ANDROID_NDK_MAP[arch])
+            except KeyError:
                 print("Unsupported arch for android: %s" % arch)
                 return
         else:
             env["CGO_ENABLED"] = "1" if race else "0"  # Race detector requires cgo
 
         plat_ldflags = ldflags.copy()
-        plat_ldflags.append("-X")
-        plat_ldflags.append(APP_SRC_CMD_PKG + ".appPlatform=" + os_name)
-        plat_ldflags.append("-X")
-        plat_ldflags.append(APP_SRC_CMD_PKG + ".appArch=" + arch)
+        plat_ldflags.extend((
+            "-X",
+            f"{APP_SRC_CMD_PKG}.appPlatform={os_name}",
+            "-X",
+            f"{APP_SRC_CMD_PKG}.appArch={arch}",
+        ))  # fmt: skip
 
         cmd = [
             "go",
@@ -298,34 +270,17 @@ def cmd_run(args, pprof=False, race=False):
     if not check_build_env():
         return
 
-    app_version = get_app_version()
-    app_date = datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-    app_toolchain = get_toolchain()
-    app_commit = get_app_commit()
-    lib_version = get_lib_version()
-
     current_os, current_arch = get_current_os_arch()
 
-    ldflags = [
+    ldflags = get_ldflags()
+    ldflags.extend((
         "-X",
-        APP_SRC_CMD_PKG + ".appVersion=" + app_version,
+        f"{APP_SRC_CMD_PKG}.appType=dev-run",
         "-X",
-        APP_SRC_CMD_PKG + ".appDate=" + app_date,
+        f"{APP_SRC_CMD_PKG}.appPlatform={current_os}",
         "-X",
-        APP_SRC_CMD_PKG + ".appType=dev-run",
-        "-X",
-        '"' + APP_SRC_CMD_PKG + ".appToolchain=" + app_toolchain + '"',
-        "-X",
-        APP_SRC_CMD_PKG + ".appCommit=" + app_commit,
-        "-X",
-        APP_SRC_CMD_PKG + ".appPlatform=" + current_os,
-        "-X",
-        APP_SRC_CMD_PKG + ".appArch=" + current_arch,
-        "-X",
-        APP_SRC_CMD_PKG + ".libVersion=" + lib_version,
-    ]
+        f"{APP_SRC_CMD_PKG}.appArch={current_arch}",
+    ))  # fmt: skip
 
     cmd = ["go", "run", "-ldflags", " ".join(ldflags)]
     if pprof:
@@ -362,9 +317,7 @@ def cmd_format_check():
         sys.exit(1)
 
     try:
-        output = (
-            subprocess.check_output(["gofumpt", "-l", "-extra", "."]).decode().strip()
-        )
+        output = subprocess.check_output(["gofumpt", "-l", "-extra", "."]).decode().strip()
     except Exception:
         print("Failed to check code format")
         sys.exit(1)
@@ -449,7 +402,7 @@ def cmd_test(module=None):
 
 
 def cmd_publish(urgent=False):
-    import requests
+    import urllib3
 
     if not check_build_env():
         return
@@ -460,23 +413,26 @@ def cmd_publish(urgent=False):
         print("Invalid app version")
         return
 
-    payload = {
-        "code": app_version_code,
-        "ver": app_version,
-        "chan": "release",
-        "url": "https://github.com/apernet/hysteria/releases",
-        "urgent": urgent,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": os.environ.get("HY_API_POST_KEY"),
-    }
-    resp = requests.post("https://api.hy2.io/v1/update", json=payload, headers=headers)
+    resp = urllib3.request(
+        "POST",
+        "https://api.hy2.io/v1/update",
+        json={
+            "code": app_version_code,
+            "ver": app_version,
+            "chan": "release",
+            "url": "https://github.com/apernet/hysteria/releases",
+            "urgent": urgent,
+        },
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": os.environ["HY_API_POST_KEY"],
+        },
+    )
 
-    if resp.status_code == 200:
+    if resp.status == 200:
         print("Published %s" % app_version)
     else:
-        print("Failed to publish %s, status code: %d" % (app_version, resp.status_code))
+        print("Failed to publish %s, status code: %d" % (app_version, resp.status))
 
 
 def cmd_clean():
@@ -488,89 +444,77 @@ def cmd_about():
     print(DESC)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-
+def build_arg_parser(parser: argparse.ArgumentParser):
     p_cmd = parser.add_subparsers(dest="command")
     p_cmd.required = True
 
     # Run
     p_run = p_cmd.add_parser("run", help="Run the app")
-    p_run.add_argument(
-        "-p", "--pprof", action="store_true", help="Run with pprof enabled"
-    )
-    p_run.add_argument(
-        "-d", "--race", action="store_true", help="Build with data race detection"
-    )
+    p_run.add_argument("-p", "--pprof", action="store_true", help="Run with pprof enabled")
+    p_run.add_argument("-d", "--race", action="store_true", help="Build with data race detection")
     p_run.add_argument("args", nargs=argparse.REMAINDER)
+    p_run.set_defaults(func=cmd_run)
 
     # Build
     p_build = p_cmd.add_parser("build", help="Build the app")
-    p_build.add_argument(
-        "-p", "--pprof", action="store_true", help="Build with pprof enabled"
-    )
-    p_build.add_argument(
-        "-r", "--release", action="store_true", help="Build a release version"
-    )
-    p_build.add_argument(
-        "-d", "--race", action="store_true", help="Build with data race detection"
-    )
+    p_build.add_argument("-p", "--pprof", action="store_true", help="Build with pprof enabled")
+    p_build.add_argument("-r", "--release", action="store_true", help="Build a release version")
+    p_build.add_argument("-d", "--race", action="store_true", help="Build with data race detection")
+    p_build.set_defaults(func=cmd_build)
 
     # Format
-    p_cmd.add_parser("format", help="Format the code")
+    p_cmd \
+        .add_parser("format", help="Format the code") \
+        .set_defaults(func=cmd_format)  # fmt: skip
 
     # Format check
-    p_cmd.add_parser("format-check", help="Check code format")
+    p_cmd \
+        .add_parser("format-check", help="Check code format") \
+        .set_defaults(func=cmd_format_check)  # fmt:skip
 
     # Mockgen
-    p_cmd.add_parser("mockgen", help="Generate mock interfaces")
+    p_cmd \
+        .add_parser("mockgen", help="Generate mock interfaces") \
+        .set_defaults(func=cmd_mockgen)  # fmt:skip
 
     # Protogen
-    p_cmd.add_parser("protogen", help="Generate protobuf interfaces")
+    p_cmd \
+        .add_parser("protogen", help="Generate protobuf interfaces")\
+        .set_defaults(func=cmd_protogen)  # fmt:skip
 
     # Tidy
-    p_cmd.add_parser("tidy", help="Tidy the go modules")
+    p_cmd \
+        .add_parser("tidy", help="Tidy the go modules") \
+        .set_defaults(func=cmd_tidy)  # fmt:skip
 
     # Test
     p_test = p_cmd.add_parser("test", help="Test the code")
     p_test.add_argument("module", nargs="?", help="Module to test")
+    p_test.set_defaults(func=cmd_test)
 
     # Publish
     p_pub = p_cmd.add_parser("publish", help="Publish the current version")
-    p_pub.add_argument(
-        "-u", "--urgent", action="store_true", help="Publish as an urgent update"
-    )
+    p_pub.add_argument("-u", "--urgent", action="store_true", help="Publish as an urgent update")
+    p_pub.set_defaults(func=cmd_publish)
 
     # Clean
-    p_cmd.add_parser("clean", help="Clean the build directory")
+    p_cmd \
+        .add_parser("clean", help="Clean the build directory") \
+        .set_defaults(func=cmd_clean)  # fmt:skip
 
     # About
-    p_cmd.add_parser("about", help="Print about information")
+    p_cmd \
+        .add_parser("about", help="Print about information") \
+        .set_defaults(func=cmd_about)  # fmt:skip
 
-    args = parser.parse_args()
 
-    if args.command == "run":
-        cmd_run(args.args, args.pprof, args.race)
-    elif args.command == "build":
-        cmd_build(args.pprof, args.release, args.race)
-    elif args.command == "format":
-        cmd_format()
-    elif args.command == "format-check":
-        cmd_format_check()
-    elif args.command == "mockgen":
-        cmd_mockgen()
-    elif args.command == "protogen":
-        cmd_protogen()
-    elif args.command == "tidy":
-        cmd_tidy()
-    elif args.command == "test":
-        cmd_test(args.module)
-    elif args.command == "publish":
-        cmd_publish(args.urgent)
-    elif args.command == "clean":
-        cmd_clean()
-    elif args.command == "about":
-        cmd_about()
+def main():
+    _parser = argparse.ArgumentParser()
+    build_arg_parser(_parser)
+    args = vars(_parser.parse_args())
+    args.pop("command")
+    func = args.pop("func")
+    func(**args)
 
 
 if __name__ == "__main__":

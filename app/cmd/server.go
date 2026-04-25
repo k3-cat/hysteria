@@ -1,13 +1,10 @@
 package cmd
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -19,19 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/caddyserver/certmagic"
-	"github.com/libdns/cloudflare"
-	"github.com/libdns/duckdns"
-	"github.com/libdns/gandi"
-	"github.com/libdns/godaddy"
-	"github.com/libdns/namedotcom"
-	"github.com/libdns/vultr"
-	"github.com/mholt/acmez/acme"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/apernet/hysteria/app/v2/internal/firewall"
 	"github.com/apernet/hysteria/app/v2/internal/utils"
 	"github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/auth"
@@ -62,7 +50,6 @@ type serverConfig struct {
 	Listen                string                      `mapstructure:"listen"`
 	Obfs                  serverConfigObfs            `mapstructure:"obfs"`
 	TLS                   *serverConfigTLS            `mapstructure:"tls"`
-	ACME                  *serverConfigACME           `mapstructure:"acme"`
 	QUIC                  serverConfigQUIC            `mapstructure:"quic"`
 	Congestion            serverConfigCongestion      `mapstructure:"congestion"`
 	Bandwidth             serverConfigBandwidth       `mapstructure:"bandwidth"`
@@ -93,41 +80,6 @@ type serverConfigTLS struct {
 	Key      string `mapstructure:"key"`
 	SNIGuard string `mapstructure:"sniGuard"` // "disable", "dns-san", "strict"
 	ClientCA string `mapstructure:"clientCA"`
-}
-
-type serverConfigACME struct {
-	// Common fields
-	Domains    []string `mapstructure:"domains"`
-	Email      string   `mapstructure:"email"`
-	CA         string   `mapstructure:"ca"`
-	ListenHost string   `mapstructure:"listenHost"`
-	Dir        string   `mapstructure:"dir"`
-
-	// Type selection
-	Type string               `mapstructure:"type"`
-	HTTP serverConfigACMEHTTP `mapstructure:"http"`
-	TLS  serverConfigACMETLS  `mapstructure:"tls"`
-	DNS  serverConfigACMEDNS  `mapstructure:"dns"`
-
-	// Legacy fields for backwards compatibility
-	// Only applicable when Type is empty
-	DisableHTTP    bool `mapstructure:"disableHTTP"`
-	DisableTLSALPN bool `mapstructure:"disableTLSALPN"`
-	AltHTTPPort    int  `mapstructure:"altHTTPPort"`
-	AltTLSALPNPort int  `mapstructure:"altTLSALPNPort"`
-}
-
-type serverConfigACMEHTTP struct {
-	AltPort int `mapstructure:"altPort"`
-}
-
-type serverConfigACMETLS struct {
-	AltPort int `mapstructure:"altPort"`
-}
-
-type serverConfigACMEDNS struct {
-	Name   string            `mapstructure:"name"`
-	Config map[string]string `mapstructure:"config"`
 }
 
 type serverConfigQUIC struct {
@@ -275,45 +227,35 @@ func (c *serverConfig) fillConn(hyConfig *server.Config) error {
 	if listenAddr == "" {
 		listenAddr = defaultListenAddr
 	}
+
+	var packetConn net.PacketConn
 	uAddr, portUnion, err := resolveServerListenAddr(listenAddr)
 	if err != nil {
 		return configError{Field: "listen", Err: err}
+	}
+	if len(portUnion) > 0 {
+		return configError{Field: "listen", Err: errors.New("pls manually configure port forwarding for multiple ports")}
 	}
 	conn, err := correctnet.ListenUDP("udp", uAddr)
 	if err != nil {
 		return configError{Field: "listen", Err: err}
 	}
-	var packetConn net.PacketConn = conn
-	var cleanup io.Closer
-	if len(portUnion) > 0 {
-		cleanup, err = firewall.SetupUDPPortRedirect(uAddr, portUnion)
-		if err != nil {
-			_ = conn.Close()
-			return configError{Field: "listen", Err: err}
-		}
-	}
+	packetConn = conn
+
 	switch strings.ToLower(c.Obfs.Type) {
 	case "", "plain":
 		hyConfig.Conn = packetConn
-		hyConfig.Cleanup = cleanup
 		return nil
 	case "salamander":
 		ob, err := obfs.NewSalamanderObfuscator([]byte(c.Obfs.Salamander.Password))
 		if err != nil {
-			_ = conn.Close()
-			if cleanup != nil {
-				_ = cleanup.Close()
-			}
+			_ = packetConn.Close()
 			return configError{Field: "obfs.salamander.password", Err: err}
 		}
 		hyConfig.Conn = obfs.WrapPacketConn(packetConn, ob)
-		hyConfig.Cleanup = cleanup
 		return nil
 	default:
-		_ = conn.Close()
-		if cleanup != nil {
-			_ = cleanup.Close()
-		}
+		_ = packetConn.Close()
 		return configError{Field: "obfs.type", Err: errors.New("unsupported obfuscation type")}
 	}
 }
@@ -338,11 +280,8 @@ func resolveServerListenAddr(listenAddr string) (*net.UDPAddr, eUtils.PortUnion,
 }
 
 func (c *serverConfig) fillTLSConfig(hyConfig *server.Config) error {
-	if c.TLS == nil && c.ACME == nil {
+	if c.TLS == nil {
 		return configError{Field: "tls", Err: errors.New("must set either tls or acme")}
-	}
-	if c.TLS != nil && c.ACME != nil {
-		return configError{Field: "tls", Err: errors.New("cannot set both tls and acme")}
 	}
 	if c.TLS != nil {
 		// SNI guard
@@ -396,177 +335,8 @@ func (c *serverConfig) fillTLSConfig(hyConfig *server.Config) error {
 			}
 			hyConfig.TLSConfig.ClientCAs = cPool
 		}
-	} else {
-		// ACME
-		dataDir := c.ACME.Dir
-		if dataDir == "" {
-			// If not specified in the config, check the environment variable
-			// before resorting to the default "acme" value. The main reason
-			// we have this is so that our setup script can set it to the
-			// user's home directory.
-			dataDir = envOrDefaultString(appACMEDirEnv, "acme")
-		}
-		cmCfg := &certmagic.Config{
-			RenewalWindowRatio: certmagic.DefaultRenewalWindowRatio,
-			KeySource:          certmagic.DefaultKeyGenerator,
-			Storage:            &certmagic.FileStorage{Path: dataDir},
-			Logger:             logger,
-		}
-		cmIssuer := certmagic.NewACMEIssuer(cmCfg, certmagic.ACMEIssuer{
-			Email:      c.ACME.Email,
-			Agreed:     true,
-			ListenHost: c.ACME.ListenHost,
-			Logger:     logger,
-		})
-		switch strings.ToLower(c.ACME.CA) {
-		case "letsencrypt", "le", "":
-			// Default to Let's Encrypt
-			cmIssuer.CA = certmagic.LetsEncryptProductionCA
-		case "zerossl", "zero":
-			cmIssuer.CA = certmagic.ZeroSSLProductionCA
-			eab, err := genZeroSSLEAB(c.ACME.Email)
-			if err != nil {
-				return configError{Field: "acme.ca", Err: err}
-			}
-			cmIssuer.ExternalAccount = eab
-		default:
-			return configError{Field: "acme.ca", Err: errors.New("unsupported CA")}
-		}
-
-		switch strings.ToLower(c.ACME.Type) {
-		case "http":
-			cmIssuer.DisableHTTPChallenge = false
-			cmIssuer.DisableTLSALPNChallenge = true
-			cmIssuer.DNS01Solver = nil
-			cmIssuer.AltHTTPPort = c.ACME.HTTP.AltPort
-		case "tls":
-			cmIssuer.DisableHTTPChallenge = true
-			cmIssuer.DisableTLSALPNChallenge = false
-			cmIssuer.DNS01Solver = nil
-			cmIssuer.AltTLSALPNPort = c.ACME.TLS.AltPort
-		case "dns":
-			cmIssuer.DisableHTTPChallenge = true
-			cmIssuer.DisableTLSALPNChallenge = true
-			if c.ACME.DNS.Name == "" {
-				return configError{Field: "acme.dns.name", Err: errors.New("empty DNS provider name")}
-			}
-			if c.ACME.DNS.Config == nil {
-				return configError{Field: "acme.dns.config", Err: errors.New("empty DNS provider config")}
-			}
-			switch strings.ToLower(c.ACME.DNS.Name) {
-			case "cloudflare":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &cloudflare.Provider{
-						APIToken: c.ACME.DNS.Config["cloudflare_api_token"],
-					},
-				}
-			case "duckdns":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &duckdns.Provider{
-						APIToken:       c.ACME.DNS.Config["duckdns_api_token"],
-						OverrideDomain: c.ACME.DNS.Config["duckdns_override_domain"],
-					},
-				}
-			case "gandi":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &gandi.Provider{
-						BearerToken: c.ACME.DNS.Config["gandi_api_token"],
-					},
-				}
-			case "godaddy":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &godaddy.Provider{
-						APIToken: c.ACME.DNS.Config["godaddy_api_token"],
-					},
-				}
-			case "namedotcom":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &namedotcom.Provider{
-						Token:  c.ACME.DNS.Config["namedotcom_token"],
-						User:   c.ACME.DNS.Config["namedotcom_user"],
-						Server: c.ACME.DNS.Config["namedotcom_server"],
-					},
-				}
-			case "vultr":
-				cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-					DNSProvider: &vultr.Provider{
-						APIToken: c.ACME.DNS.Config["vultr_api_token"],
-					},
-				}
-			default:
-				return configError{Field: "acme.dns.name", Err: errors.New("unsupported DNS provider")}
-			}
-		case "":
-			// Legacy compatibility mode
-			cmIssuer.DisableHTTPChallenge = c.ACME.DisableHTTP
-			cmIssuer.DisableTLSALPNChallenge = c.ACME.DisableTLSALPN
-			cmIssuer.AltHTTPPort = c.ACME.AltHTTPPort
-			cmIssuer.AltTLSALPNPort = c.ACME.AltTLSALPNPort
-		default:
-			return configError{Field: "acme.type", Err: errors.New("unsupported ACME type")}
-		}
-
-		cmCfg.Issuers = []certmagic.Issuer{cmIssuer}
-		cmCache := certmagic.NewCache(certmagic.CacheOptions{
-			GetConfigForCert: func(cert certmagic.Certificate) (*certmagic.Config, error) {
-				return cmCfg, nil
-			},
-			Logger: logger,
-		})
-		cmCfg = certmagic.New(cmCache, *cmCfg)
-
-		if len(c.ACME.Domains) == 0 {
-			return configError{Field: "acme.domains", Err: errors.New("empty domains")}
-		}
-		err := cmCfg.ManageSync(context.Background(), c.ACME.Domains)
-		if err != nil {
-			return configError{Field: "acme.domains", Err: err}
-		}
-		hyConfig.TLSConfig.GetCertificate = cmCfg.GetCertificate
 	}
 	return nil
-}
-
-func genZeroSSLEAB(email string) (*acme.EAB, error) {
-	req, err := http.NewRequest(
-		http.MethodPost,
-		"https://api.zerossl.com/acme/eab-credentials-email",
-		strings.NewReader(url.Values{"email": []string{email}}.Encode()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to creare ZeroSSL EAB request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", certmagic.UserAgent)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send ZeroSSL EAB request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result struct {
-		Success bool `json:"success"`
-		Error   struct {
-			Code int    `json:"code"`
-			Type string `json:"type"`
-		} `json:"error"`
-		EABKID     string `json:"eab_kid"`
-		EABHMACKey string `json:"eab_hmac_key"`
-	}
-	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed decoding ZeroSSL EAB API response: %w", err)
-	}
-	if result.Error.Code != 0 {
-		return nil, fmt.Errorf("failed getting ZeroSSL EAB credentials: HTTP %d: %s (code %d)", resp.StatusCode, result.Error.Type, result.Error.Code)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed getting EAB credentials: HTTP %d", resp.StatusCode)
-	}
-
-	return &acme.EAB{
-		KeyID:  result.EABKID,
-		MACKey: result.EABHMACKey,
-	}, nil
 }
 
 func (c *serverConfig) fillQUICConfig(hyConfig *server.Config) error {
@@ -1027,10 +797,6 @@ func runServer(v *viper.Viper) {
 		logger.Info("server up and running", zap.String("listen", config.Listen))
 	} else {
 		logger.Info("server up and running", zap.String("listen", defaultListenAddr))
-	}
-
-	if !disableUpdateCheck {
-		go runCheckUpdateServer()
 	}
 
 	signalChan := make(chan os.Signal, 1)
