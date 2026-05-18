@@ -239,6 +239,12 @@ def cmd_build(pprof=False, release=False, race=False):
             "-X",
             f"{APP_SRC_CMD_PKG}.appArch={arch}",
         ))  # fmt: skip
+        if os_name == "android":
+            # github.com/wlynxg/anet uses //go:linkname to reach internal net
+            # symbols (net.zoneCache), which Go 1.23+ rejects unless the
+            # linker is told to skip the check. Without this the Android
+            # build fails with: "link: ... invalid reference to net.zoneCache".
+            plat_ldflags.append("-checklinkname=0")
 
         cmd = [
             "go",

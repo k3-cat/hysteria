@@ -38,6 +38,7 @@ type HyUDPConn interface {
 type HandshakeInfo struct {
 	UDPEnabled bool
 	Tx         uint64 // 0 if using BBR
+	ServerAddr net.Addr
 }
 
 func NewClient(config *Config) (Client, *HandshakeInfo, error) {
@@ -87,6 +88,7 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 		DisablePathMTUDiscovery:        c.config.QUICConfig.DisablePathMTUDiscovery,
 		EnableDatagrams:                true,
 		MaxDatagramFrameSize:           protocol.MaxDatagramFrameSize,
+		OmitMaxDatagramFrameSize:       true,
 		DisablePathManager:             true,
 	}
 	tr := &quic.Transport{Conn: pktConn}
@@ -165,6 +167,7 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 	return &HandshakeInfo{
 		UDPEnabled: authResp.UDPEnabled,
 		Tx:         actualTx,
+		ServerAddr: c.config.ServerAddr,
 	}, nil
 }
 
